@@ -24,24 +24,33 @@ import Control.Applicative
 import Control.Arrow ((***))
 import Control.Monad
 import Data.Aeson
-import Data.Some (Some)
+import Data.Align
 import Data.Constraint.Extras
-import Data.Functor.Identity
-import Data.Proxy
+import Data.Constraint.Forall
+import qualified Data.Dependent.Map as DMap'
+import Data.Dependent.Map.Internal (DMap(..))
+import Data.Dependent.Map.Monoidal (MonoidalDMap(..))
+import qualified Data.Dependent.Map.Monoidal as DMap
 import Data.Dependent.Sum
 import Data.Dependent.Sum.Orphans ()
-import Data.Constraint.Forall
-import Data.Dependent.Map.Monoidal (MonoidalDMap(..))
-import Data.Dependent.Map.Internal (DMap (..))
 import Data.Foldable hiding (null)
-import qualified Data.Dependent.Map.Monoidal as DMap
+import Data.Functor.Compose
+import Data.Functor.Identity
 import Data.GADT.Compare
 import Data.GADT.Show
-import Data.Witherable
+import Data.Maybe (fromMaybe)
+import Data.Patch (Group(..))
+import Data.Proxy
+import Data.Semigroup.Commutative
+import Data.Some (Some)
+import Data.These
 import Data.Vessel.Internal
+import Witherable
 import GHC.Generics
 import Reflex.Query.Class
-import Data.Patch (Group(..), Additive)
+
+-- Do we need these?
+import Data.Patch (Group(..))
 import Data.Functor.Compose
 import Data.Align
 import qualified Data.Dependent.Map as DMap'
@@ -121,7 +130,7 @@ instance (Has' Semigroup k (FlipAp g), GCompare k, Has View k) => DecidablyEmpty
 instance (Has' Semigroup k (FlipAp g), Has' Group k (FlipAp g), GCompare k, Has View k) => Group (Vessel k g) where
   negateG (Vessel m) = Vessel (negateG m) --TODO: Do we know that nullV can't be the result of negateG?
 
-instance (Has' Additive k (FlipAp g), Has' Semigroup k (FlipAp g), GCompare k, Has View k) => Additive (Vessel k g)
+instance (Has' Commutative k (FlipAp g), Has' Semigroup k (FlipAp g), GCompare k, Has View k) => Commutative (Vessel k g)
 
 ------- The View instance for Vessel itself --------
 
@@ -183,6 +192,21 @@ traverseWithKeyV f (Vessel x) = Vessel . filterNullFlipAps <$> DMap.traverseWith
 
 traverseWithKeyV_ :: (GCompare k, Has View k, Applicative m) => (forall v. View v => k v -> v g -> m ()) -> Vessel k g -> m ()
 traverseWithKeyV_ f (Vessel x) = void $ DMap.traverseWithKey (\k (FlipAp v) -> has @View k $ Const () <$ f k v) x
+
+mapVesselKeysWith :: GCompare k' => (forall v. k' v -> v g -> v g -> v g) -> (forall v. k v -> k' v) -> Vessel k g -> Vessel k' g
+mapVesselKeysWith combineValues changeKey (Vessel m) = Vessel $ DMap.mapKeysWith (\k (FlipAp a) (FlipAp b) -> FlipAp $ combineValues k a b) changeKey m
+
+mapVesselKeysMonotonic
+  :: (forall v. k v -> k' v) -- ^ Warning: this function MUST be monotonic
+  -> Vessel k g
+  -> Vessel k' g
+mapVesselKeysMonotonic changeKey (Vessel m) = Vessel $ DMap.mapKeysMonotonic changeKey m
+
+mapVesselKeysMonotonicMaybe
+  :: (forall v. k v -> Maybe (k' v)) -- ^ Warning: this function MUST be monotonic for all Just results
+  -> Vessel k g
+  -> Vessel k' g
+mapVesselKeysMonotonicMaybe changeKey (Vessel m) = Vessel $ MonoidalDMap $ DMap'.fromDistinctAscList $ mapMaybe (\(k :=> v) -> (:=>) <$> changeKey k <*> pure v) $ DMap'.toAscList $ unMonoidalDMap m
 
 buildV :: (GCompare k, Has View k, Applicative m) => Vessel k g -> (forall v. k v -> v g -> m (v h)) -> m (Vessel k h)
 buildV v f = traverseWithKeyV f v

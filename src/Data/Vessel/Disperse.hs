@@ -20,12 +20,12 @@
 module Data.Vessel.Disperse where
 
 import Control.Arrow ((***))
-import Data.Witherable
 import Data.Align
-import Data.Map.Monoidal (MonoidalMap (..))
+import Data.Foldable hiding (null)
+import Data.Map.Monoidal (MonoidalMap(..))
 import qualified Data.Map.Monoidal as Map
 import Data.These
-import Data.Foldable hiding (null)
+import Witherable
 
 import Data.Vessel.Internal
 
@@ -81,3 +81,4 @@ instance Disperse Maybe where
   condense = \case
     Nothing -> nil
     Just xs -> Just <$> xs
+

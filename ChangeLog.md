@@ -1,5 +1,19 @@
 # Revision history for vessel
 
+## Unreleased
+
+* Add flag for enabling/disabling tutorial build
+
+## 0.3.0.0-r1
+
+* Loosen reflex bounds
+
+## 0.3.0.0
+
+* Fix singleV: absent query /= present query for deleted item
+* Use Commutative instead of the deprecated Additive
+* Update for constraints-extras 0.4
+
 ## 0.2.1.0
 
 * Allow `Vessel` and `DMapV` types to be more liberally kinded in their indexes.
