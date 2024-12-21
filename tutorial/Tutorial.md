@@ -18,6 +18,7 @@ import Control.Monad.Fix
 import Data.Aeson.GADT.TH (deriveJSONGADT)
 import Data.Align
 import Data.Proxy
+import Data.Kind (Type)
 import Data.Map (Map)
 import Data.Map.Monoidal (MonoidalMap(..))
 import Data.Semigroup (First(..), Max(..))
@@ -53,6 +54,9 @@ data Qsimple g = Qsimple
   , _q_latestPostId :: GrpMap () g -- ^ morally a "bool"; for if the maxPost Id is being requested.
   } deriving (Eq, Ord, Show, Read)
 
+newtype GrpMap k v = GrpMap { unGrpMap :: Map k v } deriving (Eq, Ord, Show, Read)
+type role GrpMap nominal nominal
+
 ```
 
 And the corresponding result type.  Note that we have the same set of fields occur in both.
@@ -73,12 +77,43 @@ have queries, and one of them "goes away", then we can either add the remaining
 have.  The latter is almost always quicker.
 
 ```haskell
-
 instance (Eq g, Monoid g) => Semigroup (Qsimple g) where Qsimple x y <> Qsimple x' y' = Qsimple (x <> x') (y <> y')
 instance (Eq g, Monoid g) => Monoid (Qsimple g) where mempty = Qsimple mempty mempty
 instance (Eq g, Group g) => Group (Qsimple g) where negateG (Qsimple x y) = Qsimple (negateG x) (negateG y)
 instance (Eq g, Monoid g, Commutative g) => Commutative (Qsimple g)
 instance GrpFunctor Qsimple where mapG f (Qsimple x y) = Qsimple (mapG f x) (mapG f y)
+
+class (forall g. (Eq g, Group g) => Group (f g)) => GrpFunctor f where
+  mapG :: (Eq b, Group b) => (a -> b) -> f a -> f b
+
+instance (Monoid g, Eq g, Ord k) => Semigroup (GrpMap k g) where
+  GrpMap xs <> GrpMap ys = GrpMap $ Map.merge id id (Map.zipWithMaybeMatched $ const $ liftNonZero (<>)) xs ys
+
+
+instance (Monoid g, Eq g, Ord k) => Monoid (GrpMap k g) where
+  mempty = GrpMap Map.empty
+
+instance (Group g, Eq g, Ord k) => Group (GrpMap k g) where
+  negateG (GrpMap xs) = GrpMap $ fmap negateG xs
+  GrpMap xs ~~ GrpMap ys = GrpMap $ Map.merge id (Map.mapMissing $ const $ negateG) (Map.zipWithMaybeMatched $ const $ liftNonZero (~~)) xs ys
+
+liftNonZero :: (Monoid a, Eq a) => (a -> a -> a) -> a -> a -> Maybe a
+liftNonZero f x y = if (xy /= mempty)
+  then Just x
+  else Nothing
+  where xy = f x y
+
+-- distributive functors can still be groups.
+instance GrpFunctor ((->) r) where mapG = fmap
+instance GrpFunctor Proxy where mapG = fmap
+instance GrpFunctor Identity where mapG = fmap
+
+instance Ord k => GrpFunctor (GrpMap k) where
+  mapG f (GrpMap xs) = GrpMap $ Map.mapMaybe (\x ->
+    let fx = f x
+    in if fx /= mempty
+    then Just fx
+    else Nothing) xs
 
 ```
 
@@ -125,7 +160,7 @@ by examining the corresponding field.
 
 ```haskell
 
-watchPost 
+watchPost
   :: ( MonadQuery t (Qsimple SelectedCount) m
      , QueryResult (Qsimple SelectedCount) ~ Rsimple
      , Reflex t
@@ -186,6 +221,17 @@ displayPost postId = do
         Nothing -> text "Post Not Found"
         Just dPost -> dynText dPost
 
+-- To avoid requiring reflex-dom, we stub out a few functions that you'd normally get from reflex-dom-core.
+type Widget t m = (NotReady t m, Adjustable t m, PostBuild t m)
+
+dyn_ :: (NotReady t m, Adjustable t m, PostBuild t m) => Dynamic t (m a) -> m ()
+dyn_ = void . networkView
+
+text :: Monad m => Text -> m ()
+text _ = pure ()
+
+dynText :: Monad m => Dynamic t Text -> m ()
+dynText _ = pure ()
 ```
 
 We can try to improve the situation in essentially all of
@@ -198,7 +244,7 @@ instances, even ones that can normally be derived.
 
 ```haskell
 
-data Qhkd (f :: * -> *) = Qhkd
+data Qhkd (f :: Type -> Type) = Qhkd
   { _qhkd_posts :: MonoidalMap PostId (f (First (Maybe Post))) -- ^ posts
   , _qhkd_latestPostId :: MonoidalMap () (f (Max (Maybe PostId))) -- ^ the max post id;
   }
@@ -214,7 +260,7 @@ expressing the same concept is with a DMap.  with this approach:
 
 ```haskell
 
-data Qtag (a :: *) where
+data Qtag (a :: Type) where
   Qtag_Posts        :: PostId -> Qtag (First (Maybe Post))
   Qtag_LatestPostId :: Qtag (Max (Maybe PostId))
 
@@ -229,7 +275,7 @@ parameters, and most of the applied types are also functor parametric.
 
 ```haskell
 
-data Qvessel (v :: (* -> *) -> *) where
+data Qvessel (v :: (Type -> Type) -> Type) where
   Posts        :: Qvessel (MapV PostId (First (Maybe Post)))
   LatestPostId :: Qvessel (IdentityV (Max (Maybe PostId)))
 
@@ -239,6 +285,11 @@ boilerplate; there's a small amount of TH to derive GCompare and all of the
 remaining instances follow from the view types in vessel:
 
 ```haskell
+deriveArgDict ''Qvessel
+deriveJSONGADT ''Qvessel
+deriveGEq ''Qvessel
+deriveGCompare ''Qvessel
+deriveGShow ''Qvessel
 
 viewPost :: (MonadQuery t (Vessel Qvessel (Const SelectedCount)) m, Reflex t, Monad m)
   => Dynamic t PostId -> m (Dynamic t (Maybe (Maybe Post)))
@@ -255,19 +306,6 @@ other types "right".
 ***
 
 ```haskell
-
--- To avoid requiring reflex-dom, we stub out a few functions that you'd normally get from reflex-dom-core.
-type Widget t m = (NotReady t m, Adjustable t m, PostBuild t m)
-
-dyn_ :: (NotReady t m, Adjustable t m, PostBuild t m) => Dynamic t (m a) -> m ()
-dyn_ = void . networkView
-
-text :: Monad m => Text -> m ()
-text _ = pure ()
-
-dynText :: Monad m => Dynamic t Text -> m ()
-dynText _ = pure ()
-
 positive :: forall x. (Monoid x, Ord x) => x -> SelectedCount
 positive x
   | x > mempty = 1
@@ -319,47 +357,4 @@ readShowLatestPost = dischargeMonadQuery promtForIt displayLatestPost
     promtForIt q = liftIO $ do
       print q
       readLn
-
--- annoying stuff that needs to exist but doesn't.
-newtype GrpMap k v = GrpMap { unGrpMap :: Map k v } deriving (Eq, Ord, Show, Read)
-type role GrpMap nominal nominal
-
-liftNonZero :: (Monoid a, Eq a) => (a -> a -> a) -> a -> a -> Maybe a
-liftNonZero f x y = if (xy /= mempty)
-  then Just x
-  else Nothing
-  where xy = f x y
-
-instance (Monoid g, Eq g, Ord k) => Semigroup (GrpMap k g) where
-  GrpMap xs <> GrpMap ys = GrpMap $ Map.merge id id (Map.zipWithMaybeMatched $ const $ liftNonZero (<>)) xs ys
-
-instance (Monoid g, Eq g, Ord k) => Monoid (GrpMap k g) where
-  mempty = GrpMap Map.empty
-  mappend = (<>)
-
-instance (Group g, Eq g, Ord k) => Group (GrpMap k g) where
-  negateG (GrpMap xs) = GrpMap $ fmap negateG xs
-  GrpMap xs ~~ GrpMap ys = GrpMap $ Map.merge id (Map.mapMissing $ const $ negateG) (Map.zipWithMaybeMatched $ const $ liftNonZero (~~)) xs ys
-
-class (forall g. (Eq g, Group g) => Group (f g)) => GrpFunctor f where
-  mapG :: (Eq b, Group b) => (a -> b) -> f a -> f b
-
--- distributive functors can still be groups.
-instance GrpFunctor ((->) r) where mapG = fmap
-instance GrpFunctor Proxy where mapG = fmap
-instance GrpFunctor Identity where mapG = fmap
-
-instance Ord k => GrpFunctor (GrpMap k) where
-  mapG f (GrpMap xs) = GrpMap $ Map.mapMaybe (\x ->
-    let fx = f x
-    in if fx /= mempty
-    then Just fx
-    else Nothing) xs
-
-deriveArgDict ''Qvessel
-deriveJSONGADT ''Qvessel
-deriveGEq ''Qvessel
-deriveGCompare ''Qvessel
-deriveGShow ''Qvessel
-
 ```
